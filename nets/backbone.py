@@ -68,6 +68,7 @@ def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
     """
     return _no_grad_trunc_normal_(tensor, mean, std, a, b)
 
+
 #--------------------------------------#
 #   Gelu激活函数的实现
 #   利用近似的数学公式
@@ -79,6 +80,10 @@ class GELU(nn.Module):
     def forward(self, x):
         return 0.5 * x * (1 + torch.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * torch.pow(x,3))))
 
+
+#--------------------------------------#
+#   Patch
+#--------------------------------------#
 class OverlapPatchEmbed(nn.Module):
     def __init__(self, patch_size=7, stride=4, in_chans=3, embed_dim=768):
         super().__init__()
@@ -105,23 +110,27 @@ class OverlapPatchEmbed(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
-        x = self.proj(x)
+        x = self.proj(x)                # [1, 3, 512, 512] -> [1, 32, 128, 128]
         _, _, H, W = x.shape
-        x = x.flatten(2).transpose(1, 2)
+        x = x.flatten(2).transpose(1, 2)#                     [1, 128*128, 32]
         x = self.norm(x)
 
         return x, H, W
 
+
 #--------------------------------------------------------------------------------------------------------------------#
 #   Attention机制
+#
 #   将输入的特征qkv特征进行划分，首先生成query, key, value。query是查询向量、key是键向量、v是值向量。
 #   然后利用 查询向量query 叉乘 转置后的键向量key，这一步可以通俗的理解为，利用查询向量去查询序列的特征，获得序列每个部分的重要程度score。
 #   然后利用 score 叉乘 value，这一步可以通俗的理解为，将序列每个部分的重要程度重新施加到序列的值上去。
-#   
+#
+#   q = q(x)
+#   kv = kv(conv(x)) conv是patch,降低x的宽高,提取全局特征
+#
 #   在segformer中，为了减少计算量，首先对特征图进行了浓缩，所有特征层都压缩到原图的1/32。
 #   当输入图片为512, 512时，Block1的特征图为128, 128，此时就先将特征层压缩为16, 16。
 #   在Block1的Attention模块中，相当于将8x8个特征点进行特征浓缩，浓缩为一个特征点。
-#   然后利用128x128个查询向量对16x16个键向量与值向量进行查询。尽管键向量与值向量的数量较少，但因为查询向量的不同，依然可以获得不同的输出。
 #--------------------------------------------------------------------------------------------------------------------#
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., sr_ratio=1):
@@ -134,15 +143,16 @@ class Attention(nn.Module):
         self.scale      = qk_scale or head_dim ** -0.5
 
         self.q          = nn.Linear(dim, dim, bias=qkv_bias)
-        
+
         self.sr_ratio = sr_ratio
         if sr_ratio > 1:
+            # patch
             self.sr     = nn.Conv2d(dim, dim, kernel_size=sr_ratio, stride=sr_ratio)
             self.norm   = nn.LayerNorm(dim)
         self.kv         = nn.Linear(dim, dim * 2, bias=qkv_bias)
-        
+
         self.attn_drop  = nn.Dropout(attn_drop)
-        
+
         self.proj       = nn.Linear(dim, dim)
         self.proj_drop  = nn.Dropout(proj_drop)
 
@@ -164,31 +174,39 @@ class Attention(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x, H, W):
-        B, N, C = x.shape
-        # bs, 16384, 32 => bs, 16384, 32 => bs, 16384, 8, 4 => bs, 8, 16384, 4
-        q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        B, P, C = x.shape   # [B, P, C]             P = H * W
+        # [B, P, C] -> [B, P, C] -> [B, P, h, c]    C = h * c
+        q = self.q(x).reshape(B, P, self.num_heads, C // self.num_heads)
+        # [B, P, h, c] -> [B, h, P, c]
+        q = q.permute(0, 2, 1, 3)
 
-        if self.sr_ratio > 1:
-            # bs, 16384, 32 => bs, 32, 128, 128
-            x_ = x.permute(0, 2, 1).reshape(B, C, H, W)
-            # bs, 32, 128, 128 => bs, 32, 16, 16 => bs, 256, 32
-            x_ = self.sr(x_).reshape(B, C, -1).permute(0, 2, 1)
+        if self.sr_ratio > 1:           # 8 4 2
+            x_ = x.permute(0, 2, 1)     # [B, P, C] -> [B, C, P]
+            x_ = x_.reshape(B, C, H, W) # [B, C, P] -> [B, C, H, W]
+            x_ = self.sr(x_)            # [B, C, H, W] -> [B, C, 16, 16]
+            x_ = x_.reshape(B, C, -1)   # [B, C, 16, 16] -> [B, C, 256]
+            x_ = x_.permute(0, 2, 1)    # [B, C, 256] -> [B, 256, C]
             x_ = self.norm(x_)
-            # bs, 256, 32 => bs, 256, 64 => bs, 256, 2, 8, 4 => 2, bs, 8, 256, 4
-            kv = self.kv(x_).reshape(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+            kv = self.kv(x_)            # [B, 256, C] -> [B, 256, 2*C]
+            #                             [B, 256, 2*C] -> [B, 256, 2, h, c]
+            kv = kv.reshape(B, -1, 2, self.num_heads, C // self.num_heads)
+            kv = kv.permute(2, 0, 3, 1, 4)# [B, 256, 2, h, c] -> [2, B, h, 256, c]
         else:
-            kv = self.kv(x).reshape(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        k, v = kv[0], kv[1]
+            kv = self.kv(x)
+            kv = kv.reshape(B, -1, 2, self.num_heads, C // self.num_heads)
+            kv = kv.permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1] # [2, B, h, 256, c] -> [B, h, 256, c] * 2
 
-        # bs, 8, 16384, 4 @ bs, 8, 4, 256 => bs, 8, 16384, 256 
+        # [B, h, P, c] @ [B, h, c, 256] -> [B, h, P, 256]
         attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
+        attn = attn.softmax(dim=-1) # 取每一列,在行上做softmax
         attn = self.attn_drop(attn)
 
-        # bs, 8, 16384, 256  @ bs, 8, 256, 4 => bs, 8, 16384, 4 => bs, 16384, 32
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        # bs, 16384, 32 => bs, 16384, 32
-        x = self.proj(x)
+        x = (attn @ v)              # [B, h, P, 256] @ [B, h, 256, c] = [B, h, P, c]
+        x = x.transpose(1, 2)       # [B, h, P, c] -> [B, P, h, c]
+        x = x.reshape(B, P, C)      # [B, P, h, c] -> [B, P, C]
+
+        x = self.proj(x)            # [B, P, C] -> [B, P, C]
         x = self.proj_drop(x)
 
         return x
@@ -211,6 +229,7 @@ def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: b
         random_tensor.div_(keep_prob)
     return x * random_tensor
 
+
 class DropPath(nn.Module):
     def __init__(self, drop_prob=None, scale_by_keep=True):
         super(DropPath, self).__init__()
@@ -219,32 +238,34 @@ class DropPath(nn.Module):
 
     def forward(self, x):
         return drop_path(x, self.drop_prob, self.training, self.scale_by_keep)
-    
+
+
 class DWConv(nn.Module):
     def __init__(self, dim=768):
         super(DWConv, self).__init__()
         self.dwconv = nn.Conv2d(dim, dim, 3, 1, 1, bias=True, groups=dim)
 
     def forward(self, x, H, W):
-        B, N, C = x.shape
-        x = x.transpose(1, 2).view(B, C, H, W)
-        x = self.dwconv(x)
-        x = x.flatten(2).transpose(1, 2)
+        B, P, C = x.shape                       # [B, P, 4*C]
+        x = x.transpose(1, 2).view(B, C, H, W)  # [B, P, 4*C] -> [B, 4*C, P] -> [B, 4*C, H, W]  C = H * W
+        x = self.dwconv(x)                      # [B, 4*C, H, W] -> [B, 4*C, H, W]
+        x = x.flatten(2).transpose(1, 2)        # [B, 4*C, H, W] -> [B, 4*C, P] -> [B, P, 4*C]
 
         return x
-    
+
+
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=GELU, drop=0.):
         super().__init__()
         out_features    = out_features or in_features
         hidden_features = hidden_features or in_features
-        
+
         self.fc1    = nn.Linear(in_features, hidden_features)
         self.dwconv = DWConv(hidden_features)
         self.act    = act_layer()
-        
+
         self.fc2    = nn.Linear(hidden_features, out_features)
-        
+
         self.drop   = nn.Dropout(drop)
 
         self.apply(self._init_weights)
@@ -265,20 +286,21 @@ class Mlp(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x, H, W):
-        x = self.fc1(x)
-        x = self.dwconv(x, H, W)
+        x = self.fc1(x)             # [B, P, C] -> [B, P, 4*C]
+        x = self.dwconv(x, H, W)    # [B, P, 4*C] -> [B, 4*C, P] -> [B, 4*C, H, W] -> [B, 4*C, H, W] -> [B, 4*C, P] -> [B, P, 4*C]
         x = self.act(x)
         x = self.drop(x)
-        x = self.fc2(x)
+        x = self.fc2(x)             # [B, P, 4*C] -> [B, 4*C, P]
         x = self.drop(x)
         return x
+
 
 class Block(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=GELU, norm_layer=nn.LayerNorm, sr_ratio=1):
         super().__init__()
         self.norm1      = norm_layer(dim)
-        
+
         self.attn       = Attention(
             dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
             attn_drop=attn_drop, proj_drop=drop, sr_ratio=sr_ratio
@@ -287,7 +309,7 @@ class Block(nn.Module):
         self.mlp        = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
 
         self.drop_path  = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        
+
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -310,6 +332,7 @@ class Block(nn.Module):
         x = x + self.drop_path(self.mlp(self.norm2(x), H, W))
         return x
 
+
 class MixVisionTransformer(nn.Module):
     def __init__(self, in_chans=3, num_classes=1000, embed_dims=[32, 64, 160, 256],
                  num_heads=[1, 2, 4, 8], mlp_ratios=[4, 4, 4, 4], qkv_bias=False, qk_scale=None, drop_rate=0.,
@@ -323,18 +346,18 @@ class MixVisionTransformer(nn.Module):
         #   Transformer模块，共有四个部分
         #----------------------------------#
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
-        
+
         #----------------------------------#
         #   block1
         #----------------------------------#
         #-----------------------------------------------#
         #   对输入图像进行分区，并下采样
-        #   512, 512, 3 => 128, 128, 32 => 16384, 32
+        #   [B, 3, 512, 512] -> [B, 32, 128, 128] -> [B, 128*128, 32]
         #-----------------------------------------------#
         self.patch_embed1 = OverlapPatchEmbed(patch_size=7, stride=4, in_chans=in_chans, embed_dim=embed_dims[0])
         #-----------------------------------------------#
         #   利用transformer模块进行特征提取
-        #   16384, 32 => 16384, 32
+        #   [B, 128*128, 32] -> [B, 128*128, 32]
         #-----------------------------------------------#
         cur = 0
         self.block1 = nn.ModuleList(
@@ -347,18 +370,18 @@ class MixVisionTransformer(nn.Module):
             ]
         )
         self.norm1 = norm_layer(embed_dims[0])
-        
+
         #----------------------------------#
         #   block2
         #----------------------------------#
         #-----------------------------------------------#
         #   对输入图像进行分区，并下采样
-        #   128, 128, 32 => 64, 64, 64 => 4096, 64
+        #   [B, 32, 128, 128] -> [B, 64, 64, 64] -> [B, 64*64, 64]
         #-----------------------------------------------#
         self.patch_embed2 = OverlapPatchEmbed(patch_size=3, stride=2, in_chans=embed_dims[0], embed_dim=embed_dims[1])
         #-----------------------------------------------#
         #   利用transformer模块进行特征提取
-        #   4096, 64 => 4096, 64
+        #   [B, 64*64, 64] -> [B, 64*64, 64]
         #-----------------------------------------------#
         cur += depths[0]
         self.block2 = nn.ModuleList(
@@ -377,12 +400,12 @@ class MixVisionTransformer(nn.Module):
         #----------------------------------#
         #-----------------------------------------------#
         #   对输入图像进行分区，并下采样
-        #   64, 64, 64 => 32, 32, 160 => 1024, 160
+        #   [B, 64, 64, 64] -> [B, 160, 32, 32] -> [B, 32*32, 160]
         #-----------------------------------------------#
         self.patch_embed3 = OverlapPatchEmbed(patch_size=3, stride=2, in_chans=embed_dims[1], embed_dim=embed_dims[2])
         #-----------------------------------------------#
         #   利用transformer模块进行特征提取
-        #   1024, 160 => 1024, 160
+        #   [B, 32*32, 160] -> [B, 32*32, 160]
         #-----------------------------------------------#
         cur += depths[1]
         self.block3 = nn.ModuleList(
@@ -401,12 +424,12 @@ class MixVisionTransformer(nn.Module):
         #----------------------------------#
         #-----------------------------------------------#
         #   对输入图像进行分区，并下采样
-        #   32, 32, 160 => 16, 16, 256 => 256, 256
+        #   [B, 160, 32, 32] -> [B, 256, 16, 16] -> [B, 256, 256]
         #-----------------------------------------------#
         self.patch_embed4 = OverlapPatchEmbed(patch_size=3, stride=2, in_chans=embed_dims[2], embed_dim=embed_dims[3])
         #-----------------------------------------------#
         #   利用transformer模块进行特征提取
-        #   256, 256 => 256, 256
+        #   [B, 256, 256] -> [B, 256, 256]
         #-----------------------------------------------#
         cur += depths[2]
         self.block4 = nn.ModuleList(
@@ -436,52 +459,69 @@ class MixVisionTransformer(nn.Module):
             m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
             if m.bias is not None:
                 m.bias.data.zero_()
-                
+
     def forward(self, x):
-        B = x.shape[0]
+        B = x.shape[0]  # [B, 3, 512, 512]
         outs = []
 
         #----------------------------------#
         #   block1
         #----------------------------------#
-        x, H, W = self.patch_embed1.forward(x)
+        # [B, 3, 512, 512] -> [B, 32, 128, 128] -> [B, 128*128, 32]
+        x, H, W = self.patch_embed1(x)
+        # [B, 128*128, 32] -> [B, 128*128, 32]
         for i, blk in enumerate(self.block1):
-            x = blk.forward(x, H, W)
+            x = blk(x, H, W)
         x = self.norm1(x)
+        # [B, 128*128, 32] -> [B, 128, 128, 32] -> [B, 32, 128, 128]
         x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         outs.append(x)
 
         #----------------------------------#
         #   block2
         #----------------------------------#
-        x, H, W = self.patch_embed2.forward(x)
+        # [B, 32, 128, 128] -> [B, 64, 64, 64] -> [B, 64*64, 64]
+        x, H, W = self.patch_embed2(x)
+        # [B, 64*64, 64] -> [B, 64*64, 64]
         for i, blk in enumerate(self.block2):
-            x = blk.forward(x, H, W)
+            x = blk(x, H, W)
         x = self.norm2(x)
+        # [B, 64*64, 64] -> [B, 64, 64, 64] -> [B, 64, 64, 64]
         x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         outs.append(x)
 
         #----------------------------------#
         #   block3
         #----------------------------------#
-        x, H, W = self.patch_embed3.forward(x)
+        # [B, 64, 64, 64] -> [B, 160, 32, 32] -> [B, 32*32, 160]
+        x, H, W = self.patch_embed3(x)
+        # [B, 32*32, 160] -> [B, 32*32, 160]
         for i, blk in enumerate(self.block3):
-            x = blk.forward(x, H, W)
+            x = blk(x, H, W)
         x = self.norm3(x)
+        # [B, 32*32, 160] -> [B, 32, 32, 160] -> [B, 160, 32, 32]
         x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         outs.append(x)
 
         #----------------------------------#
         #   block4
         #----------------------------------#
-        x, H, W = self.patch_embed4.forward(x)
+        # [B, 160, 32, 32] -> [B, 256, 16, 16] -> [B, 256, 256]
+        x, H, W = self.patch_embed4(x)
+        # [B, 256, 256] -> [B, 256, 256]
         for i, blk in enumerate(self.block4):
-            x = blk.forward(x, H, W)
+            x = blk(x, H, W)
         x = self.norm4(x)
+        # [B, 256, 256] -> [B, 16, 16, 256] -> [B, 256, 16, 16]
         x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         outs.append(x)
 
+        # [B, 32, 128, 128]
+        # [B, 64, 64, 64]
+        # [B, 160, 32, 32]
+        # [B, 256, 16, 16]
         return outs
+
 
 class mit_b0(MixVisionTransformer):
     def __init__(self, pretrained = False):
@@ -542,3 +582,17 @@ class mit_b5(MixVisionTransformer):
         if pretrained:
             print("Load backbone weights")
             self.load_state_dict(torch.load("model_data/segformer_b5_backbone_weights.pth"), strict=False)
+
+
+if __name__ == "__main__":
+    x = torch.ones(1, 3, 512, 512)
+    model = mit_b1()
+    model.eval()
+    with torch.inference_mode():
+        y = model(x)
+    for y_ in y:
+        print(y_.size())
+        # [1, 32,128, 128]
+        # [1, 64,  64, 64]
+        # [1, 160, 32, 32]
+        # [1, 256, 16, 16]

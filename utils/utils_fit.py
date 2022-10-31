@@ -21,7 +21,7 @@ def fit_one_epoch(model_train, model, loss_history, eval_callback, optimizer, ep
         pbar = tqdm(total=epoch_step,desc=f'Epoch {epoch + 1}/{Epoch}',postfix=dict,mininterval=0.3)
     model_train.train()
     for iteration, batch in enumerate(gen):
-        if iteration >= epoch_step: 
+        if iteration >= epoch_step:
             break
         imgs, pngs, labels = batch
         with torch.no_grad():
@@ -49,7 +49,7 @@ def fit_one_epoch(model_train, model, loss_history, eval_callback, optimizer, ep
             if dice_loss:
                 main_dice = Dice_loss(outputs, labels)
                 loss      = loss + main_dice
-                
+
             with torch.no_grad():
                 #-------------------------------#
                 #   计算f_score
@@ -89,12 +89,12 @@ def fit_one_epoch(model_train, model, loss_history, eval_callback, optimizer, ep
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
-            
+
         total_loss      += loss.item()
         total_f_score   += _f_score.item()
-        
+
         if local_rank == 0:
-            pbar.set_postfix(**{'total_loss': total_loss / (iteration + 1), 
+            pbar.set_postfix(**{'total_loss': total_loss / (iteration + 1),
                                 'f_score'   : total_f_score / (iteration + 1),
                                 'lr'        : get_lr(optimizer)})
             pbar.update(1)
@@ -140,13 +140,13 @@ def fit_one_epoch(model_train, model, loss_history, eval_callback, optimizer, ep
 
             val_loss    += loss.item()
             val_f_score += _f_score.item()
-            
+
         if local_rank == 0:
             pbar.set_postfix(**{'val_loss'  : val_loss / (iteration + 1),
                                 'f_score'   : val_f_score / (iteration + 1),
                                 'lr'        : get_lr(optimizer)})
             pbar.update(1)
-            
+
     if local_rank == 0:
         pbar.close()
         print('Finish Validation')
@@ -154,7 +154,7 @@ def fit_one_epoch(model_train, model, loss_history, eval_callback, optimizer, ep
         eval_callback.on_epoch_end(epoch + 1, model_train)
         print('Epoch:'+ str(epoch + 1) + '/' + str(Epoch))
         print('Total Loss: %.3f || Val Loss: %.3f ' % (total_loss / epoch_step, val_loss / epoch_step_val))
-        
+
         #-----------------------------------------------#
         #   保存权值
         #-----------------------------------------------#
@@ -164,5 +164,5 @@ def fit_one_epoch(model_train, model, loss_history, eval_callback, optimizer, ep
         if len(loss_history.val_loss) <= 1 or (val_loss / epoch_step_val) <= min(loss_history.val_loss):
             print('Save best model to best_epoch_weights.pth')
             torch.save(model.state_dict(), os.path.join(save_dir, "best_epoch_weights.pth"))
-            
+
         torch.save(model.state_dict(), os.path.join(save_dir, "last_epoch_weights.pth"))
