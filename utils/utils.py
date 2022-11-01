@@ -7,10 +7,10 @@ from PIL import Image
 #---------------------------------------------------------#
 def cvtColor(image):
     if len(np.shape(image)) == 3 and np.shape(image)[2] == 3:
-        return image 
+        return image
     else:
         image = image.convert('RGB')
-        return image 
+        return image
 
 #---------------------------------------------------#
 #   对输入图像进行resize
@@ -28,7 +28,7 @@ def resize_image(image, size):
     new_image.paste(image, ((w-nw)//2, (h-nh)//2))
 
     return new_image, nw, nh
-    
+
 #---------------------------------------------------#
 #   获得学习率
 #---------------------------------------------------#

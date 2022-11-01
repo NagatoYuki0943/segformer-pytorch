@@ -88,15 +88,15 @@ class SegmentationDataset(Dataset):
             nh = int(nw/new_ar)
         image = image.resize((nw,nh), Image.BICUBIC)
         label = label.resize((nw,nh), Image.NEAREST)
-        
+
         #------------------------------------------#
         #   翻转图像
         #------------------------------------------#
         flip = self.rand()<.5
-        if flip: 
+        if flip:
             image = image.transpose(Image.FLIP_LEFT_RIGHT)
             label = label.transpose(Image.FLIP_LEFT_RIGHT)
-        
+
         #------------------------------------------#
         #   将图像多余的部分加上灰条
         #------------------------------------------#
@@ -114,14 +114,14 @@ class SegmentationDataset(Dataset):
         #   高斯模糊
         #------------------------------------------#
         blur = self.rand() < 0.25
-        if blur: 
+        if blur:
             image_data = cv2.GaussianBlur(image_data, (5, 5), 0)
 
         #------------------------------------------#
         #   旋转
         #------------------------------------------#
         rotate = self.rand() < 0.25
-        if rotate: 
+        if rotate:
             center      = (w // 2, h // 2)
             rotation    = np.random.randint(-10, 11)
             M           = cv2.getRotationMatrix2D(center, -rotation, scale=1)
@@ -148,7 +148,7 @@ class SegmentationDataset(Dataset):
 
         image_data = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val)))
         image_data = cv2.cvtColor(image_data, cv2.COLOR_HSV2RGB)
-        
+
         return image_data, label
 
 

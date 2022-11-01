@@ -110,9 +110,9 @@ class OverlapPatchEmbed(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
-        x = self.proj(x)                # [1, 3, 512, 512] -> [1, 32, 128, 128]
+        x = self.proj(x)                # [1, 3, 512, 512] -> [1, 32, 128, 128] -> [B, 64, 64, 64] -> [B, 160, 32, 32] -> [B, 256, 16, 16]
         _, _, H, W = x.shape
-        x = x.flatten(2).transpose(1, 2)#                     [1, 128*128, 32]
+        x = x.flatten(2).transpose(1, 2)#                     [1, 128*128, 32]     [B, 64*64, 64]     [B, 32*32, 160]     [B, 256, 256]
         x = self.norm(x)
 
         return x, H, W
@@ -210,6 +210,7 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
 
         return x
+
 
 def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: bool = True):
     """
