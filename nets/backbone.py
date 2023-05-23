@@ -248,7 +248,7 @@ class DWConv(nn.Module):
 
     def forward(self, x, H, W):
         B, P, C = x.shape                       # [B, P, 4*C]
-        x = x.transpose(1, 2).view(B, C, H, W)  # [B, P, 4*C] -> [B, 4*C, P] -> [B, 4*C, H, W]  C = H * W
+        x = x.transpose(1, 2).view(B, C, H, W)  # [B, P, 4*C] -> [B, 4*C, P] -> [B, 4*C, H, W]  P = H * W
         x = self.dwconv(x)                      # [B, 4*C, H, W] -> [B, 4*C, H, W]
         x = x.flatten(2).transpose(1, 2)        # [B, 4*C, H, W] -> [B, 4*C, P] -> [B, P, 4*C]
 
