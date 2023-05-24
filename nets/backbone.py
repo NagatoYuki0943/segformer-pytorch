@@ -288,7 +288,7 @@ class Mlp(nn.Module):
 
     def forward(self, x, H, W):
         x = self.fc1(x)             # [B, P, C] -> [B, P, 4*C]
-        x = self.dwconv(x, H, W)    # [B, P, 4*C] -> [B, 4*C, P] -> [B, 4*C, H, W] -> [B, 4*C, H, W] -> [B, 4*C, P] -> [B, P, 4*C]
+        x = self.dwconv(x, H, W)    # [B, P, 4*C] -> [B, 4*C, P] -> [B, 4*C, H, W] -> [B, 4*C, H, W] -> [B, 4*C, P] -> [B, P, 4*C]      彻底去掉了Positional Embedding, 取而代之的是Mix FFN, 在feed forward network中引入3x3 deepwise conv传递位置信息
         x = self.act(x)
         x = self.drop(x)
         x = self.fc2(x)             # [B, P, 4*C] -> [B, 4*C, P]
