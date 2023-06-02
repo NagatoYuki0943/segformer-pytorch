@@ -29,7 +29,7 @@ class SegmentationDataset(Dataset):
         #   从文件中读取图像
         #-------------------------------#
         jpg         = Image.open(os.path.join(os.path.join(self.dataset_path, "VOC2007/JPEGImages"), name + ".jpg"))
-        png         = Image.open(os.path.join(os.path.join(self.dataset_path, "VOC2007/SegmentationClass"), name + ".png"))
+        png         = Image.open(os.path.join(os.path.join(self.dataset_path, "VOC2007/SegmentationClass"), name + ".png")) # PIL可以正确读取labelme的彩色图片,读出的数据是[0,1,2...],而opencv读取的是真实的颜色值,不能正确读取
         #-------------------------------#
         #   数据增强
         #-------------------------------#
@@ -37,7 +37,7 @@ class SegmentationDataset(Dataset):
 
         jpg         = np.transpose(preprocess_input(np.array(jpg, np.float64)), [2,0,1])
         png         = np.array(png)
-        png[png >= self.num_classes] = self.num_classes
+        png[png >= self.num_classes] = self.num_classes # 将255调整为分类数最大的值,其他的值不受影响
         #-------------------------------------------------------#
         #   转化成one_hot的形式
         #   在这里需要+1是因为voc数据集有些标签具有白边部分
@@ -164,3 +164,15 @@ def seg_dataset_collate(batch):
     pngs        = torch.from_numpy(np.array(pngs)).long()
     seg_labels  = torch.from_numpy(np.array(seg_labels)).type(torch.FloatTensor)
     return images, pngs, seg_labels
+
+
+if __name__ == "__main__":
+    with open("../VOCdevkit/VOC2007/ImageSets/Segmentation/train.txt", "r") as f:
+        train_lines = f.readlines()
+    input_shape     = [512, 512]
+    num_classes     = 21
+    train           = True
+    VOCdevkit_path  = '../VOCdevkit'
+    dataset = SegmentationDataset(train_lines, input_shape, num_classes, train, VOCdevkit_path)
+    dataset[0][0]
+    # print(dataset[0][1])
